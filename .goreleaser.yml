@@ -1,0 +1,67 @@
+# This is an example .goreleaser.yml file with some sane defaults.
+# Make sure to check the documentation at http://goreleaser.com
+project_name: Key-Generator
+before:
+    hooks:
+        # You may remove this if you don't use go modules.
+        - go mod download
+builds:
+    - id: d
+      main: ./
+      env:
+          - CGO_ENABLED=1
+          - CC=o64-clang
+          - CXX=o64-clang++
+      goos:
+          - darwin
+      goarch:
+          - amd64
+      binary: keys-generator
+    - id: l
+      main: ./
+      env:
+          - CGO_ENABLED=1
+          - CC=gcc
+          - CXX=g++
+      goos:
+          - linux
+      goarch:
+          - amd64
+      binary: keys-generator
+    - id: w
+      main: ./
+      env:
+          - CGO_ENABLED=1
+          - CC=x86_64-w64-mingw32-gcc
+          - CXX=x86_64-w64-mingw32-g++
+      goos:
+          - windows
+      goarch:
+          - amd64
+      binary: keys-generator
+archives:
+    - format: tar.gz
+      format_overrides:
+          - goos: windows
+            format: zip
+      replacements:
+          darwin: MacOS
+          linux: Linux
+          windows: Windows
+          amd64: 64-bit
+      files:
+      name_template: "{{ .ProjectName }}_{{ .Version }}_{{.Os}}-{{ .Arch }}"
+checksum:
+    name_template: 'checksums.txt'
+changelog:
+    sort: asc
+    filters:
+        exclude:
+            - '^docs:'
+            - '^test:'
+release:
+    github:
+        owner: leporel
+        name: keys-generator
+    prerelease: auto
+    draft: false

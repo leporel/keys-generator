@@ -4,6 +4,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"strconv"
+	"sync"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -20,6 +25,24 @@ func main() {
 		printEthereumKeys(os.Args[2], keysPerPage)
 	case "eth-search":
 		printEthPrivateKeySearch(os.Args[2], keysPerPage)
+	case "btc-brute":
+		bruteBitcoinKeys(os.Args[2])
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		os.Exit(1)
+	case "eth-brute":
+		apiKey := ""
+		if len(os.Args) > 3 {
+			apiKey = os.Args[3]
+		}
+		bruteEthereumKeys(os.Args[2], apiKey)
+
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+		os.Exit(1)
 	default:
 		log.Fatal("Invalid coin type")
 	}
@@ -63,4 +86,242 @@ func printEthPrivateKeySearch(privateKey string, keysPerPage int) {
 	pageNumber := findEthPrivateKeyPage(privateKey, keysPerPage)
 
 	fmt.Printf("%v", pageNumber)
+}
+
+func bruteBitcoinKeys(workers string) {
+	checker := NewChecker(50, "")
+
+	maxWorkers, err := strconv.Atoi(workers)
+	if err != nil {
+		panic(err)
+	}
+
+	printer := Printer{
+		mu:           &sync.Mutex{},
+		ch:           make(chan PrinterData, 10),
+		workersState: workerState{},
+		workers:      maxWorkers,
+	}
+
+	f, err := os.OpenFile("./btc_output.txt", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	var mu sync.Mutex
+	writer := func(data string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if _, err = f.WriteString(data); err != nil {
+			panic(err)
+		}
+	}
+
+	printer.work()
+
+	for i := 0; i < maxWorkers; i++ {
+		go btcWorker(i, checker, printer.ch, writer)
+	}
+}
+
+func btcWorker(id int, checker Checker, status chan PrinterData, writer func(string)) {
+	max := makeBigInt("904625697166532776746648320380374280100293470930272690489102837043110636675")
+	var pages uint64 = 0
+
+	for true {
+		founds := 0
+		pages++
+		pageNumber := getRand(max).String()
+		bitcoinKeys := generateBitcoinKeys(pageNumber, 128)
+
+		var toCheck []string
+
+		for _, k := range bitcoinKeys {
+			toCheck = append(toCheck, k.compressed)
+		}
+
+		result, found, err := checker.CheckBTC(toCheck)
+
+		if err != nil {
+			status <- PrinterData{
+				number: id,
+				found:  founds,
+				error:  err,
+			}
+			continue
+		}
+
+		if found {
+			for compressed, data := range result {
+				if data.FinalBalance > 0 || data.NTx > 0 {
+					founds++
+
+					var private, uncompressed string
+					for _, bitcoinKey := range bitcoinKeys {
+						if bitcoinKey.compressed == compressed {
+							private = bitcoinKey.private
+							uncompressed = bitcoinKey.uncompressed
+						}
+					}
+
+					writer(fmt.Sprintf("%v balance (total %v) (%v tx) | %v | %v | %v",
+						data.FinalBalance, data.TotalReceived, data.NTx, compressed, uncompressed, private))
+				}
+			}
+		}
+
+		status <- PrinterData{
+			number: id,
+			found:  founds,
+			error:  err,
+		}
+	}
+}
+
+func bruteEthereumKeys(workers string, apiKey string) {
+	rate := 270
+	if apiKey == "" {
+		apiKey = "YourApiKeyToken"
+		rate = 10
+	}
+	checker := NewChecker(rate, apiKey)
+
+	maxWorkers, err := strconv.Atoi(workers)
+	if err != nil {
+		panic(err)
+	}
+
+	printer := Printer{
+		mu:           &sync.Mutex{},
+		ch:           make(chan PrinterData, 10),
+		workersState: workerState{},
+		workers:      maxWorkers,
+	}
+
+	f, err := os.OpenFile("./eth_output.txt", os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	var mu sync.Mutex
+	writer := func(data string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if _, err = f.WriteString(data); err != nil {
+			panic(err)
+		}
+	}
+
+	printer.work()
+
+	for i := 0; i < maxWorkers; i++ {
+		go ethWorker(i, checker, printer.ch, writer)
+	}
+}
+
+func ethWorker(id int, checker Checker, status chan PrinterData, writer func(string)) {
+	max := makeBigInt("904625697166532776746648320380374280100293470930272690489102837043110636675")
+	var pages uint64 = 0
+
+	for true {
+		founds := 0
+		pages++
+		pageNumber := getRand(max).String()
+		ethereumKeys := generateEthereumKeys(pageNumber, 20)
+
+		var toCheck []string
+
+		for _, k := range ethereumKeys {
+			toCheck = append(toCheck, k.public)
+		}
+
+		result, found, err := checker.CheckETH(toCheck)
+
+		if err != nil {
+			status <- PrinterData{
+				number: id,
+				found:  founds,
+				error:  err,
+			}
+			continue
+		}
+
+		if found {
+			for _, data := range result {
+				if data.Balance != "0" {
+					founds++
+
+					var private string
+					for _, eKey := range ethereumKeys {
+						if eKey.public == data.Account {
+							private = eKey.private
+						}
+					}
+
+					writer(fmt.Sprintf("%v balance | %v | %v",
+						data.Balance, data.Account, private))
+				}
+			}
+		}
+
+		status <- PrinterData{
+			number: id,
+			found:  founds,
+			error:  err,
+		}
+	}
+}
+
+type PrinterData struct {
+	number int
+	found  int
+	error  error
+}
+
+type workerState struct {
+	pagesTotal uint64
+	found      int
+	errors     int
+}
+
+type Printer struct {
+	mu           *sync.Mutex
+	ch           chan PrinterData
+	workersState workerState
+	workers      int
+	lastError    error
+}
+
+func (p *Printer) work() {
+	go func() {
+		for data := range p.ch {
+			p.mu.Lock()
+			p.workersState.pagesTotal += 1
+			p.workersState.found += data.found
+			if data.error != nil {
+				p.workersState.errors += 1
+				p.lastError = data.error
+			}
+			p.mu.Unlock()
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(time.Second * 1)
+
+		//fmt.Print("\033[s")
+
+		for _ = range ticker.C {
+			//fmt.Print("\033[u\033[K")
+			p.mu.Lock()
+			fmt.Printf("\r workers[%v] pages=%v found=%v errors=%v",
+				p.workers, p.workersState.pagesTotal, p.workersState.found, p.workersState.errors)
+			if p.lastError != nil {
+				fmt.Printf(" (last error: %v)", p.lastError)
+			}
+			p.mu.Unlock()
+		}
+	}()
 }

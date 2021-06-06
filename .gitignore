@@ -1,1 +1,9 @@
 keys-generator.exe
+/keys-generator
+/btc_output.txt
+/eth_output.txt
+.idea
+*.tar.xz
+dist
+vendor
+.release-env

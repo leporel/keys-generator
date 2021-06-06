@@ -21,6 +21,13 @@ keys-generator btc-search <btc private key>
 keys-generator eth-search <eth private key>
 ```
 
+For brute by pages, run:
+```bash
+keys-generator btc-brute <number of workers> 
+keys-generator eth-brute <number of workers> <ETHERSCAN_API_KEY>
+```
+without ETHERSCAN_API_KEY limit is 1req per 5sec
+
 ## License
 
 This project is open-sourced software licensed under the [MIT license](http://opensource.org/licenses/MIT)
