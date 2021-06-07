@@ -50,6 +50,7 @@ archives:
           windows: Windows
           amd64: 64-bit
       files:
+        - proxy.txt
       name_template: "{{ .ProjectName }}_{{ .Version }}_{{.Os}}-{{ .Arch }}"
 checksum:
     name_template: 'checksums.txt'

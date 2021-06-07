@@ -55,34 +55,72 @@ type ETHTX struct {
 
 type Checker interface {
 	// https://www.blockchain.com/ru/api/blockchain_api
-	CheckBTC(addresses []string) (map[string]BTCData, bool, error) // 128 list, ? per minute
+	CheckBTC(addresses []string) (map[string]BTCData, bool, error) // 128 list, 58 per minute
 	// https://etherscan.io/apis
-	CheckETH(addresses []string) ([]ETHAccount, bool, error) // 20 list, 300 per minute (5 	sec/IP)
+	CheckETH(addresses []string) ([]ETHAccount, bool, error) // 20 list, 300 per minute (5 sec/IP)
+	AvaibleProxy() int
 }
 
 type Chkr struct {
-	rl     ratelimit.Limiter
 	btcApi string
 	ethApi string
+
+	RBAPI     RoundRobin
+	RBClients RoundRobin
 }
 
 func (c *Chkr) CheckBTC(addresses []string) (map[string]BTCData, bool, error) {
-	_ = c.rl.Take()
 	return c.checkBtcBalanceWallet(addresses)
 }
 
 func (c *Chkr) CheckETH(addresses []string) ([]ETHAccount, bool, error) {
-	_ = c.rl.Take()
 	return c.checkEthBalanceWallet(addresses)
 }
 
-func NewChecker(rateLimit int, ethApiKey string) Checker {
-	rl := ratelimit.New(rateLimit, ratelimit.Per(60*time.Second))
+func (c *Chkr) AvaibleProxy() int {
+	return c.RBClients.Len()
+}
+
+func NewChecker(rateLimit int, ethApiKey []string) Checker {
+	var apiKeys []rbElement
+	for _, s := range ethApiKey {
+		apiKeys = append(apiKeys, &apiKey{
+			s,
+		})
+	}
+	rbAPI := roundRobinNew(apiKeys)
+
+	defaultClient := &client{
+		name:   "local client",
+		client: http.DefaultClient,
+		rl:     ratelimit.New(rateLimit, ratelimit.Per(60*time.Second)),
+	}
+	clients := []rbElement{defaultClient}
+
+	proxyList, err := readLines("./proxy.txt")
+	if err != nil {
+		panic(err)
+	}
+	for _, s := range proxyList {
+		proxyCli, err := NewProxyClient(s)
+		if err != nil {
+			panic(err)
+		}
+		cli := &client{
+			name:   s,
+			client: proxyCli,
+			rl:     ratelimit.New(rateLimit, ratelimit.Per(60*time.Second)),
+		}
+		clients = append(clients, cli)
+	}
+
+	rbCli := roundRobinNew(clients)
 
 	return &Chkr{
-		rl:     rl,
-		btcApi: "https://blockchain.info/balance?cors=true&active=",
-		ethApi: fmt.Sprintf("https://api.etherscan.io/api?module=account&action=balancemulti&apikey=%s&address=", ethApiKey),
+		btcApi:    "https://blockchain.info/balance?cors=true&active=",
+		ethApi:    "https://api.etherscan.io/api?module=account&action=balancemulti&apikey=%s&address=%s",
+		RBAPI:     rbAPI,
+		RBClients: rbCli,
 	}
 }
 
@@ -104,31 +142,51 @@ func (c *Chkr) checkBtcBalanceWallet(compressed []string) (map[string]BTCData, b
 		list = fmt.Sprintf("%s|%s", list, s)
 	}
 
-	resp, err := http.Get(c.btcApi + list)
-
-	if err != nil {
-		return nil, false, err
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, false, fmt.Errorf("blockchain.info/balance resp status %v", resp.Status)
-	}
-
-	result := make(map[string]BTCData, 0)
-
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		return nil, false, err
-	}
-
-	var found bool
-	for _, data := range result {
-		if data.FinalBalance > 0 || data.NTx > 0 {
-			found = true
+	maxTry := 5
+	var rsErr error
+	for i := 0; i < maxTry; i++ {
+		elemC, err := c.RBClients.Next()
+		if err != nil {
+			return nil, false, fmt.Errorf("not avaible proxys")
 		}
+		cli := elemC.Get().(*client)
+		_ = cli.rl.Take()
+
+		resp, err := cli.client.Get(c.btcApi + list)
+		if err != nil {
+			if c.RBClients.Delete(elemC) {
+				fmt.Printf("\nproxy not working [%s] removed from list \n", cli.name)
+			}
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			rsErr = fmt.Errorf("blockchain.info/balance resp status %v", resp.Status)
+			continue
+		}
+
+		result := make(map[string]BTCData, 0)
+
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		if err != nil {
+			return nil, false, err
+		}
+
+		var found bool
+		for _, data := range result {
+			if data.FinalBalance > 0 || data.NTx > 0 {
+				found = true
+			}
+		}
+
+		return result, found, nil
 	}
 
-	return result, found, nil
+	if rsErr != nil {
+		return nil, false, rsErr
+	}
+
+	return nil, false, fmt.Errorf("did nothing")
 }
 
 func (c *Chkr) checkEthBalanceWallet(compressed []string) ([]ETHAccount, bool, error) {
@@ -141,40 +199,90 @@ func (c *Chkr) checkEthBalanceWallet(compressed []string) ([]ETHAccount, bool, e
 		list = fmt.Sprintf("%s,%s", list, compressed[i])
 	}
 
-	resp, err := http.Get(c.ethApi + list)
+	maxTry := 5
+	var rsErr error
+	for i := 0; i < maxTry; i++ {
 
-	if err != nil {
-		return nil, false, err
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, false, fmt.Errorf("api.etherscan.io resp status %v", resp.Status)
-	}
-
-	var result ETHData
-
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		return nil, false, err
-	}
-
-	if result.Status != "1" {
-		return nil, false, fmt.Errorf("api.etherscan.io status %v", result.Status)
-	}
-
-	var accounts []ETHAccount
-
-	err = json.Unmarshal(result.Result, &accounts)
-	if err != nil {
-		return nil, false, err
-	}
-
-	var found bool
-	for _, data := range accounts {
-		if data.Balance != "0" {
-			found = true
+		elemK, err := c.RBAPI.Next()
+		if err != nil {
+			return nil, false, fmt.Errorf("ether scan api keys gone")
 		}
+
+		apiKey := elemK.Get().(string)
+
+		elemC, err := c.RBClients.Next()
+		if err != nil {
+			return nil, false, fmt.Errorf("not avaible proxys")
+		}
+		cli := elemC.Get().(*client)
+		_ = cli.rl.Take()
+
+		resp, err := cli.client.Get(fmt.Sprintf(c.ethApi, apiKey, list))
+		if err != nil {
+			if c.RBClients.Delete(elemC) {
+				fmt.Printf("\nproxy not working [%s] removed from list \n", cli.name)
+			}
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			rsErr = fmt.Errorf("api.etherscan.io resp status %v", resp.Status)
+			continue
+		}
+
+		var result ETHData
+
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if result.Status != "1" {
+			rsErr = fmt.Errorf("api.etherscan.io status %v", result.Status)
+			continue
+		}
+
+		var accounts []ETHAccount
+
+		err = json.Unmarshal(result.Result, &accounts)
+		if err != nil {
+			return nil, false, err
+		}
+
+		var found bool
+		for _, data := range accounts {
+			if data.Balance != "0" {
+				found = true
+			}
+		}
+
+		return accounts, found, nil
+	}
+	if rsErr != nil {
+		return nil, false, rsErr
 	}
 
-	return accounts, found, nil
+	return nil, false, fmt.Errorf("did nothing")
+}
+
+type rbElement interface {
+	Get() interface{}
+}
+
+type apiKey struct {
+	key string
+}
+
+func (a *apiKey) Get() interface{} {
+	return a.key
+}
+
+type client struct {
+	name   string
+	client *http.Client
+	rl     ratelimit.Limiter
+}
+
+func (c *client) Get() interface{} {
+	return c
 }

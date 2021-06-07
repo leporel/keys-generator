@@ -25,9 +25,19 @@ For brute by pages, run:
 ```bash
 keys-generator btc-brute <number of workers> 
 keys-generator eth-brute <number of workers> <ETHERSCAN_API_KEY>
+
+# support multiple api keys
+keys-generator eth-brute <number of workers> <ETHERSCAN_API_KEY>,<ETHERSCAN_API_KEY>,<ETHERSCAN_API_KEY>
 ```
-btc api request rate limit is 50 / minute  
-eth api without ETHERSCAN_API_KEY limit is 1 request per 5 seconds, with api key 270 per minute
+
+Btc api request rate limit is 50 / minute  
+Eth api without ETHERSCAN_API_KEY limit is 1 request per 5 seconds, with api key 270 per minute
+
+To increase the req/min limits, use a list of proxies, add them to proxy.txt  
+```
+user:pass@127.0.0.1:777
+192.0.0.1:5555
+```
 
 ## License
 
