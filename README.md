@@ -26,7 +26,7 @@ For brute by pages, run:
 keys-generator btc-brute <number of workers> 
 keys-generator eth-brute <number of workers> <ETHERSCAN_API_KEY>
 ```
-btc api request rate limit is 50 / minute 
+btc api request rate limit is 50 / minute  
 eth api without ETHERSCAN_API_KEY limit is 1 request per 5 seconds, with api key 270 per minute
 
 ## License
