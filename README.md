@@ -25,6 +25,8 @@ For brute by pages, run:
 ```bash
 keys-generator btc-brute <number of workers> 
 keys-generator eth-brute <number of workers> <ETHERSCAN_API_KEY>
+keys-generator bsc-brute <number of workers> <BINANCE_API_KEY>
+keys-generator bsc-brute <number of workers> <BINANCE_API_KEY> <FROM_PRIVATE_ADDRESS>
 
 # support multiple api keys
 keys-generator eth-brute <number of workers> <ETHERSCAN_API_KEY>,<ETHERSCAN_API_KEY>,<ETHERSCAN_API_KEY>

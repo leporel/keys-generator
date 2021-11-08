@@ -7,3 +7,4 @@ keys-generator.exe
 dist
 vendor
 .release-env
+/bsc_output.txt

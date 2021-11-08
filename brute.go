@@ -27,6 +27,17 @@ type ETHAccount struct {
 	Balance string `json:"balance"`
 }
 
+type BSC struct {
+	Status  string          `json:"status"`
+	Message string          `json:"message"`
+	Result  json.RawMessage `json:"result"`
+}
+
+type BSCAccount struct {
+	Account string `json:"account"`
+	Balance string `json:"balance"`
+}
+
 // https://api.etherscan.io/api?module=account&action=txlist&address=0xddbd2b932c763ba5b1b7ae3b362eac3e8d40121a&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=YourApiKeyToken
 type ETHTX struct {
 	Status  string `json:"status"`
@@ -58,12 +69,14 @@ type Checker interface {
 	CheckBTC(addresses []string) (map[string]BTCData, bool, error) // 128 list, 58 per minute
 	// https://etherscan.io/apis
 	CheckETH(addresses []string) ([]ETHAccount, bool, error) // 20 list, 300 per minute (5 sec/IP)
+	CheckBSC(addresses []string) ([]BSCAccount, bool, error) // 20 list, 300 per minute (5 sec/IP)
 	AvaibleProxy() int
 }
 
 type Chkr struct {
 	btcApi string
 	ethApi string
+	bscApi string
 
 	RBAPI     RoundRobin
 	RBClients RoundRobin
@@ -75,6 +88,10 @@ func (c *Chkr) CheckBTC(addresses []string) (map[string]BTCData, bool, error) {
 
 func (c *Chkr) CheckETH(addresses []string) ([]ETHAccount, bool, error) {
 	return c.checkEthBalanceWallet(addresses)
+}
+
+func (c *Chkr) CheckBSC(addresses []string) ([]BSCAccount, bool, error) {
+	return c.checkBscBalanceWallet(addresses)
 }
 
 func (c *Chkr) AvaibleProxy() int {
@@ -119,6 +136,7 @@ func NewChecker(rateLimit int, ethApiKey []string) Checker {
 	return &Chkr{
 		btcApi:    "https://blockchain.info/balance?cors=true&active=",
 		ethApi:    "https://api.etherscan.io/api?module=account&action=balancemulti&apikey=%s&address=%s",
+		bscApi:    "https://api.bscscan.com/api?module=account&action=balancemulti&tag=latest&apikey=%s&address=%s",
 		RBAPI:     rbAPI,
 		RBClients: rbCli,
 	}
@@ -238,11 +256,87 @@ func (c *Chkr) checkEthBalanceWallet(compressed []string) ([]ETHAccount, bool, e
 		}
 
 		if result.Status != "1" {
-			rsErr = fmt.Errorf("api.etherscan.io status %v", result.Status)
+			rsErr = fmt.Errorf("api.etherscan.io status %v, message: %s", result.Status, result.Message)
 			continue
 		}
 
 		var accounts []ETHAccount
+
+		err = json.Unmarshal(result.Result, &accounts)
+		if err != nil {
+			return nil, false, err
+		}
+
+		var found bool
+		for _, data := range accounts {
+			if data.Balance != "0" {
+				found = true
+			}
+		}
+
+		return accounts, found, nil
+	}
+	if rsErr != nil {
+		return nil, false, rsErr
+	}
+
+	return nil, false, fmt.Errorf("did nothing")
+}
+
+func (c *Chkr) checkBscBalanceWallet(compressed []string) ([]BSCAccount, bool, error) {
+	if len(compressed) > 20 {
+		return nil, false, fmt.Errorf("maxsimum adress list 20")
+	}
+
+	list := compressed[0]
+	for i := 1; i < len(compressed); i++ {
+		list = fmt.Sprintf("%s,%s", list, compressed[i])
+	}
+
+	maxTry := 5
+	var rsErr error
+	for i := 0; i < maxTry; i++ {
+
+		elemK, err := c.RBAPI.Next()
+		if err != nil {
+			return nil, false, fmt.Errorf("api keys gone")
+		}
+
+		apiKey := elemK.Get().(string)
+
+		elemC, err := c.RBClients.Next()
+		if err != nil {
+			return nil, false, fmt.Errorf("not avaible proxys")
+		}
+		cli := elemC.Get().(*client)
+		_ = cli.rl.Take()
+
+		resp, err := cli.client.Get(fmt.Sprintf(c.bscApi, apiKey, list))
+		if err != nil {
+			if c.RBClients.Delete(elemC) {
+				fmt.Printf("\nproxy not working [%s] removed from list \n", cli.name)
+			}
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			rsErr = fmt.Errorf("api.bscscan.com resp status %v", resp.Status)
+			continue
+		}
+
+		var result BSC
+
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		if err != nil {
+			return nil, false, err
+		}
+
+		if result.Status != "1" {
+			rsErr = fmt.Errorf("api.bscscan.com status %v, message: %s", result.Status, result.Message)
+			continue
+		}
+
+		var accounts []BSCAccount
 
 		err = json.Unmarshal(result.Result, &accounts)
 		if err != nil {
